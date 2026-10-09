@@ -10,9 +10,9 @@ import (
 	"github.com/stretchr/testify/require"
 	"golang.org/x/crypto/nacl/sign"
 
-	"github.com/gammazero/nexus/v3/router/auth"
-	"github.com/gammazero/nexus/v3/transport"
-	"github.com/gammazero/nexus/v3/wamp"
+	"github.com/ironflock/nexus/v3/router/auth"
+	"github.com/ironflock/nexus/v3/transport"
+	"github.com/ironflock/nexus/v3/wamp"
 )
 
 // cryptoSignKeyStore is a test KeyStore that maps a single authid to a

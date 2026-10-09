@@ -7,8 +7,8 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/gammazero/nexus/v3/client"
-	"github.com/gammazero/nexus/v3/wamp"
+	"github.com/ironflock/nexus/v3/client"
+	"github.com/ironflock/nexus/v3/wamp"
 )
 
 // TestSpecSessionWelcomeFeatures pins the router's advertised broker and

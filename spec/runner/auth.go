@@ -5,9 +5,9 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/gammazero/nexus/v3/router/auth"
-	"github.com/gammazero/nexus/v3/wamp"
-	"github.com/gammazero/nexus/v3/wamp/crsign"
+	"github.com/ironflock/nexus/v3/router/auth"
+	"github.com/ironflock/nexus/v3/wamp"
+	"github.com/ironflock/nexus/v3/wamp/crsign"
 )
 
 // ComputeSpec is a non-wire side-step that derives a value from

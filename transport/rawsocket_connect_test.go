@@ -11,8 +11,8 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/gammazero/nexus/v3/transport"
-	"github.com/gammazero/nexus/v3/transport/serialize"
+	"github.com/ironflock/nexus/v3/transport"
+	"github.com/ironflock/nexus/v3/transport/serialize"
 )
 
 // TestConnectRawSocketPeerBadNetworkType pins the early validation:

@@ -3,7 +3,7 @@ package transport
 import (
 	"sync"
 
-	"github.com/gammazero/nexus/v3/wamp"
+	"github.com/ironflock/nexus/v3/wamp"
 )
 
 const defaultRToCQueueSize = 64

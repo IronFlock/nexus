@@ -9,7 +9,7 @@ import (
 
 	"golang.org/x/crypto/nacl/sign"
 
-	"github.com/gammazero/nexus/v3/wamp"
+	"github.com/ironflock/nexus/v3/wamp"
 )
 
 type CryptoSignAuthenticator struct {

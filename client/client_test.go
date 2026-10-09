@@ -16,12 +16,12 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/gammazero/nexus/v3/client"
-	"github.com/gammazero/nexus/v3/router"
-	"github.com/gammazero/nexus/v3/router/auth"
-	"github.com/gammazero/nexus/v3/stdlog"
-	"github.com/gammazero/nexus/v3/wamp"
-	"github.com/gammazero/nexus/v3/wamp/crsign"
+	"github.com/ironflock/nexus/v3/client"
+	"github.com/ironflock/nexus/v3/router"
+	"github.com/ironflock/nexus/v3/router/auth"
+	"github.com/ironflock/nexus/v3/stdlog"
+	"github.com/ironflock/nexus/v3/wamp"
+	"github.com/ironflock/nexus/v3/wamp/crsign"
 )
 
 const (

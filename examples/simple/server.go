@@ -8,8 +8,8 @@ import (
 	"os"
 	"os/signal"
 
-	"github.com/gammazero/nexus/v3/router"
-	"github.com/gammazero/nexus/v3/wamp"
+	"github.com/ironflock/nexus/v3/router"
+	"github.com/ironflock/nexus/v3/wamp"
 )
 
 const (

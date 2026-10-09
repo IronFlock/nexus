@@ -8,8 +8,8 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/gammazero/nexus/v3/transport"
-	"github.com/gammazero/nexus/v3/wamp"
+	"github.com/ironflock/nexus/v3/transport"
+	"github.com/ironflock/nexus/v3/wamp"
 )
 
 // TestDealerTrySendDoesNotPanicOnClosedSession pins the safety guarantee

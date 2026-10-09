@@ -5,8 +5,8 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/gammazero/nexus/v3/transport/serialize"
-	"github.com/gammazero/nexus/v3/wamp"
+	"github.com/ironflock/nexus/v3/transport/serialize"
+	"github.com/ironflock/nexus/v3/wamp"
 )
 
 // TestPackE2EEPayloadCBORRoundTrip pins the End-to-End-Encrypted

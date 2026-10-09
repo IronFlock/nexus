@@ -3,8 +3,8 @@ package router
 import (
 	"time"
 
-	"github.com/gammazero/nexus/v3/stdlog"
-	"github.com/gammazero/nexus/v3/wamp"
+	"github.com/ironflock/nexus/v3/stdlog"
+	"github.com/ironflock/nexus/v3/wamp"
 )
 
 // Broker handles publish/subscribe and topic-side meta procedures

@@ -7,7 +7,7 @@ import (
 
 	"github.com/ugorji/go/codec"
 
-	"github.com/gammazero/nexus/v3/wamp"
+	"github.com/ironflock/nexus/v3/wamp"
 )
 
 var mh *codec.MsgpackHandle //nolint:gochecknoglobals

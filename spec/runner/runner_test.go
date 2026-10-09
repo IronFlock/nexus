@@ -4,7 +4,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/gammazero/nexus/v3/spec/runner"
+	"github.com/ironflock/nexus/v3/spec/runner"
 )
 
 // TestSpecConformance walks every YAML plan under spec/plans/ and runs it

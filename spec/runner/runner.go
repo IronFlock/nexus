@@ -27,8 +27,8 @@ import (
 	"github.com/stretchr/testify/require"
 	"gopkg.in/yaml.v3"
 
-	"github.com/gammazero/nexus/v3/transport/serialize"
-	"github.com/gammazero/nexus/v3/wamp"
+	"github.com/ironflock/nexus/v3/transport/serialize"
+	"github.com/ironflock/nexus/v3/wamp"
 )
 
 // Plan is the on-disk format of a YAML test plan.

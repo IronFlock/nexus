@@ -8,8 +8,8 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/gammazero/nexus/v3/client"
-	"github.com/gammazero/nexus/v3/wamp"
+	"github.com/ironflock/nexus/v3/client"
+	"github.com/ironflock/nexus/v3/wamp"
 )
 
 // deadWriterPeer models a websocket peer whose writer has gone: Send() is

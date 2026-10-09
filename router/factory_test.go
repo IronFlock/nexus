@@ -6,8 +6,8 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/gammazero/nexus/v3/stdlog"
-	"github.com/gammazero/nexus/v3/wamp"
+	"github.com/ironflock/nexus/v3/stdlog"
+	"github.com/ironflock/nexus/v3/wamp"
 )
 
 // brokerFactoryProbe wraps the default broker but records that the

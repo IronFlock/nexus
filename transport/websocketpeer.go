@@ -13,9 +13,9 @@ import (
 
 	"github.com/gorilla/websocket"
 
-	"github.com/gammazero/nexus/v3/stdlog"
-	"github.com/gammazero/nexus/v3/transport/serialize"
-	"github.com/gammazero/nexus/v3/wamp"
+	"github.com/ironflock/nexus/v3/stdlog"
+	"github.com/ironflock/nexus/v3/transport/serialize"
+	"github.com/ironflock/nexus/v3/wamp"
 )
 
 // DialFunc is an alternate Dial function for the websocket dialer.

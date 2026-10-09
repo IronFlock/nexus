@@ -10,10 +10,10 @@ import (
 	"github.com/stretchr/testify/require"
 	"golang.org/x/crypto/nacl/sign"
 
-	"github.com/gammazero/nexus/v3/client"
-	"github.com/gammazero/nexus/v3/router"
-	"github.com/gammazero/nexus/v3/router/auth"
-	"github.com/gammazero/nexus/v3/wamp"
+	"github.com/ironflock/nexus/v3/client"
+	"github.com/ironflock/nexus/v3/router"
+	"github.com/ironflock/nexus/v3/router/auth"
+	"github.com/ironflock/nexus/v3/wamp"
 )
 
 // cryptosignKeyStore is a minimal KeyStore for the cryptosign-auth tests.

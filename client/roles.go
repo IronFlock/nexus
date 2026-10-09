@@ -1,6 +1,6 @@
 package client
 
-import "github.com/gammazero/nexus/v3/wamp"
+import "github.com/ironflock/nexus/v3/wamp"
 
 // Features supported by nexus client.
 var clientRoles = wamp.Dict{ //nolint:gochecknoglobals
