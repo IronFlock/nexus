@@ -55,12 +55,38 @@ type clientInvocation struct {
 	request      wamp.ID
 }
 
+// replyWaiter is the awaitingReply entry of a request whose reply a caller is
+// waiting for. It lives from expectReply until dropReply.
+type replyWaiter struct {
+	// reply carries the reply to the waiter, and for a CALL every
+	// progressive RESULT before the final one. It has room for one message:
+	// run() puts a reply there while holding sess.Lock, in the same critical
+	// section in which it finds the entry, whenever there is room -- always
+	// for the single reply of a SUBSCRIBE, REGISTER, UNSUBSCRIBE, UNREGISTER
+	// or acknowledged PUBLISH. Such a reply is thus handed over, or not, in
+	// one step relative to dropReply, and run() never waits for it to be
+	// taken.
+	reply chan wamp.Message
+
+	// gone is closed by dropReply when nobody waits for the reply any more.
+	// When reply is full, run() waits for room only until then, so a waiter
+	// that gives up (at its response timeout, say) cannot block run().
+	gone chan struct{}
+
+	// install, if not nil, is called by run() with sess locked when it puts
+	// the first reply into reply, before it reads the next message from the
+	// router. Subscribe and Register use it to install their handler, so
+	// that an EVENT or INVOCATION the router sends right behind SUBSCRIBED or
+	// REGISTERED finds it.
+	install func(reply wamp.Message)
+}
+
 // A Client routes messages to/from a WAMP router.
 type Client struct {
 	sess *wamp.Session
 
 	responseTimeout time.Duration
-	awaitingReply   map[wamp.ID]chan wamp.Message
+	awaitingReply   map[wamp.ID]*replyWaiter
 
 	eventHandlers map[wamp.ID]EventHandler
 	topicSubID    map[string]wamp.ID
@@ -298,7 +324,7 @@ func NewClient(p wamp.Peer, cfg Config) (*Client, error) {
 		sess: sess,
 
 		responseTimeout: cfg.ResponseTimeout,
-		awaitingReply:   map[wamp.ID]chan wamp.Message{},
+		awaitingReply:   map[wamp.ID]*replyWaiter{},
 
 		eventHandlers: map[wamp.ID]EventHandler{},
 		topicSubID:    map[string]wamp.ID{},
@@ -354,6 +380,10 @@ type EventHandler func(event *wamp.Event)
 // match, or it can specify a URI pattern to match multiple events for the same
 // handler by specifying the pattern type in options.
 //
+// The handler is in place before the client reads the message that follows
+// SUBSCRIBED, so it also receives an event the router sends right behind
+// SUBSCRIBED, such as a retained event.
+//
 // # Subscribe Options
 //
 // To request a pattern-based subscription set:
@@ -370,7 +400,16 @@ func (c *Client) Subscribe(topic string, fn EventHandler, options wamp.Dict) err
 		options = wamp.Dict{}
 	}
 	id := c.sess.IDGen.Next()
-	c.expectReply(id)
+	// run() installs the event handler when it hands over the SUBSCRIBED
+	// reply, before it reads the next message: the router may send an EVENT
+	// for the new subscription right behind SUBSCRIBED (a retained event,
+	// say), and it must find the handler.
+	c.expectReplyInstall(id, func(reply wamp.Message) {
+		if msg, ok := reply.(*wamp.Subscribed); ok {
+			c.eventHandlers[msg.Subscription] = fn
+			c.topicSubID[topic] = msg.Subscription
+		}
+	})
 	if err := c.send(&wamp.Subscribe{
 		Request: id,
 		Options: options,
@@ -387,11 +426,7 @@ func (c *Client) Subscribe(topic string, fn EventHandler, options wamp.Dict) err
 	}
 	switch msg := msg.(type) {
 	case *wamp.Subscribed:
-		// Register the event handler for this subscription.
-		c.sess.Lock()
-		c.eventHandlers[msg.Subscription] = fn
-		c.topicSubID[topic] = msg.Subscription
-		c.sess.Unlock()
+		// run() has installed the event handler.
 		return nil
 	case *wamp.Error:
 		return fmt.Errorf("subscribing to topic '%v': %s", topic,
@@ -614,6 +649,10 @@ type InvocationHandler func(context.Context, *wamp.Invocation) InvokeResult
 // procedure. The InvocationHandler is set to be called for each procedure call
 // received.
 //
+// The handler is in place before the client reads the message that follows
+// REGISTERED, so it also handles a call the router routes to the new
+// registration right away.
+//
 // If the registration handler wants to cancel the call without returning a
 // result, then it should return InvocationCanceled.
 //
@@ -637,7 +676,17 @@ func (c *Client) Register(procedure string, fn InvocationHandler, options wamp.D
 		return ErrNotConn
 	}
 	id := c.sess.IDGen.Next()
-	c.expectReply(id)
+	// run() installs the invocation handler when it hands over the REGISTERED
+	// reply, before it reads the next message: the router may send an
+	// INVOCATION for the new registration right behind REGISTERED (to a
+	// caller that was waiting for the procedure, say), and it must find the
+	// handler.
+	c.expectReplyInstall(id, func(reply wamp.Message) {
+		if msg, ok := reply.(*wamp.Registered); ok {
+			c.invHandlers[msg.Registration] = fn
+			c.nameProcID[procedure] = msg.Registration
+		}
+	})
 	if options == nil {
 		options = wamp.Dict{}
 	}
@@ -657,11 +706,7 @@ func (c *Client) Register(procedure string, fn InvocationHandler, options wamp.D
 	}
 	switch msg := msg.(type) {
 	case *wamp.Registered:
-		// Register the event handler for this registration.
-		c.sess.Lock()
-		c.invHandlers[msg.Registration] = fn
-		c.nameProcID[procedure] = msg.Registration
-		c.sess.Unlock()
+		// run() has installed the invocation handler.
 		if c.debug {
 			c.log.Println("Registered", procedure, "as registration",
 				msg.Registration)
@@ -1096,6 +1141,13 @@ func (rpce RPCError) Error() string {
 // Close causes the client to leave the realm it has joined, and closes the
 // connection to the router.
 //
+// Close sends GOODBYE and waits up to twice the response timeout for the
+// router's answer. If the client has not stopped by then, Close tells it to
+// stop and waits at most the response timeout more: it does not wait for a
+// handler that does not return, such as an EventHandler or the
+// ProgressHandler of a Call. The message being handled then is the last one
+// the client handles. Done is closed when Close returns.
+//
 // Returns ErrAlreadyClosed if the client is already closed. This error can be
 // safely ignored.
 func (c *Client) Close() error {
@@ -1135,7 +1187,7 @@ func (c *Client) Close() error {
 
 		if !stopped {
 			c.sess.EndRecv(nil) // force run() to exit
-			<-c.Done()
+			c.awaitRunExit()
 		}
 	}
 
@@ -1144,6 +1196,31 @@ func (c *Client) Close() error {
 	c.sess.Close()
 
 	return nil
+}
+
+// awaitRunExit waits for run() to exit once EndRecv has told it to stop.
+// run() notices that at its next read, but it can be stuck before getting
+// there: in an EventHandler that does not return, or handing a progressive
+// RESULT to a Call whose progress handler does not return. Close waits no
+// longer than the response timeout, then cancels the client itself: Done
+// closes, everything waiting on it returns -- run() too, unless it is inside
+// an EventHandler -- and Close can finish.
+func (c *Client) awaitRunExit() {
+	timer := time.NewTimer(c.responseTimeout)
+	defer timer.Stop()
+	select {
+	case <-c.Done():
+		return
+	case <-timer.C:
+	}
+	c.log.Println("Client", c.sess, "did not stop within", c.responseTimeout,
+		"- closing without waiting for it")
+	// Cancel under sess.Lock: runHandleInvocation checks the context under
+	// the same lock before it starts a handler, so no handler can start
+	// behind Close's wait for the active ones.
+	c.sess.Lock()
+	c.cancel()
+	c.sess.Unlock()
 }
 
 // RouterGoodbye returns the GOODBYE message received from the router, if one
@@ -1157,6 +1234,10 @@ func (c *Client) RouterGoodbye() *wamp.Goodbye {
 		// Client not disconnected from router yet.
 		return nil
 	}
+	// Locked: when Close had to cancel the client while run() was stuck,
+	// run() can still record a GOODBYE after Done is closed.
+	c.sess.Lock()
+	defer c.sess.Unlock()
 	return c.routerGoodbye
 }
 
@@ -1376,18 +1457,40 @@ func unexpectedMsgError(msg wamp.Message, expected wamp.MessageType) error {
 	return errors.New(s)
 }
 
+// expectReply registers a waiter for the reply to request id. Call it before
+// sending the request; waitForReply or waitForReplyWithCancel then waits for
+// the reply, and every path that does not reach them must call dropReply.
 func (c *Client) expectReply(id wamp.ID) {
-	wait := make(chan wamp.Message)
+	c.expectReplyInstall(id, nil)
+}
+
+// expectReplyInstall is expectReply with a function that run() calls, with
+// sess locked, when it hands over the first reply to request id (see
+// replyWaiter.install). It is not called for a reply that arrives after
+// dropReply: the request has failed by then, as far as its caller is
+// concerned.
+func (c *Client) expectReplyInstall(id wamp.ID, install func(reply wamp.Message)) {
+	w := &replyWaiter{
+		reply:   make(chan wamp.Message, 1),
+		gone:    make(chan struct{}),
+		install: install,
+	}
 	c.sess.Lock()
-	c.awaitingReply[id] = wait
+	c.awaitingReply[id] = w
 	c.sess.Unlock()
 }
 
-// dropReply forgets a reply that will no longer be waited for, because the
-// request it belongs to was never handed to the writer.
+// dropReply removes the awaitingReply entry of request id once nobody waits
+// for its reply: the request was never handed to the writer, or its waiter is
+// done. Closing gone releases run() if it is waiting to hand that waiter
+// another message, and from now on run() finds no entry for a reply to id:
+// it hands over nothing and installs nothing.
 func (c *Client) dropReply(id wamp.ID) {
 	c.sess.Lock()
-	delete(c.awaitingReply, id)
+	if w, ok := c.awaitingReply[id]; ok {
+		delete(c.awaitingReply, id)
+		close(w.gone)
+	}
 	c.sess.Unlock()
 }
 
@@ -1437,16 +1540,14 @@ func sendTimeout(peer wamp.Peer, msg wamp.Message, timeout time.Duration) error 
 	}
 }
 
-// waitForReply waits for an expected reply from the router.
+// waitForReply waits for the reply to request id, registered with
+// expectReply, and then removes the entry with dropReply.
 //
 // IMPORTANT: Must not block on anything requiring run() goroutine, since the
-// run() goroutine may be blocked waiting for a reply to be read from the
-// awaiting reply channel.
+// run() goroutine may be blocked waiting to hand a reply to this waiter.
 func (c *Client) waitForReply(id wamp.ID) (wamp.Message, error) {
-	var wait chan wamp.Message
-	var ok bool
 	c.sess.Lock()
-	wait, ok = c.awaitingReply[id]
+	w, ok := c.awaitingReply[id]
 	c.sess.Unlock()
 	if !ok {
 		return nil, fmt.Errorf("not expecting reply for ID: %v", id)
@@ -1456,35 +1557,38 @@ func (c *Client) waitForReply(id wamp.ID) (wamp.Message, error) {
 	var err error
 	timer := time.NewTimer(c.responseTimeout)
 	select {
-	case msg, ok = <-wait:
-		timer.Stop()
-		if !ok {
-			// Return directly here, since awaitingReply entry already deleted.
-			return nil, ErrNotConn
-		}
+	case msg = <-w.reply:
 	case <-timer.C:
 		err = ErrReplyTimeout
 	case <-c.Done():
 		err = ErrNotConn
 	}
-	c.sess.Lock()
-	delete(c.awaitingReply, id)
-	c.sess.Unlock()
-
+	timer.Stop()
+	c.dropReply(id)
+	if err != nil {
+		// run() hands over a reply only while the entry exists, under the
+		// lock dropReply takes. A reply handed over before dropReply, with
+		// its handler installed for a SUBSCRIBE or REGISTER, is the outcome
+		// of the request even if the timer fired too: return it, rather
+		// than an error that contradicts the state of the client.
+		select {
+		case msg = <-w.reply:
+			err = nil
+		default:
+		}
+	}
 	return msg, err
 }
 
 // waitForReplyWithCancel waits for an expected reply from the router while
-// monitoring the context for call cancellation.
+// monitoring the context for call cancellation, and then removes the entry
+// with dropReply.
 //
 // IMPORTANT: Must not block on anything requiring run() goroutine, since the
-// run() goroutine may be blocked waiting for a reply to be read from the
-// awaiting reply channel.
+// run() goroutine may be blocked waiting to hand a reply to this waiter.
 func (c *Client) waitForReplyWithCancel(ctx context.Context, id wamp.ID, procedure string, progChan chan<- *wamp.Result) (wamp.Message, error) { //nolint:lll
-	var wait chan wamp.Message
-	var ok bool
 	c.sess.Lock()
-	wait, ok = c.awaitingReply[id]
+	w, ok := c.awaitingReply[id]
 	c.sess.Unlock()
 	if !ok {
 		return nil, fmt.Errorf("not expecting reply for ID: %v", id)
@@ -1494,17 +1598,12 @@ func (c *Client) waitForReplyWithCancel(ctx context.Context, id wamp.ID, procedu
 	var err error
 CollectResults:
 	select {
-	case msg, ok = <-wait:
-		if !ok {
-			// Return here, since awaitingReply entry already deleted.
-			return nil, ErrNotConn
-		}
+	case msg = <-w.reply:
 		// If this is a progressive result, put the Result message on the
 		// progress channel and go back to waiting for more results.
 		if progChan != nil {
-			var result *wamp.Result
-			if result, ok = msg.(*wamp.Result); ok {
-				if ok, _ = result.Details[wamp.OptProgress].(bool); ok {
+			if result, isResult := msg.(*wamp.Result); isResult {
+				if progress, _ := result.Details[wamp.OptProgress].(bool); progress {
 					progChan <- result
 					goto CollectResults
 				}
@@ -1528,12 +1627,8 @@ CollectResults:
 	waitCancel:
 		// Discard responses until ERROR or timeout
 		select {
-		case msg, ok = <-wait:
-			if !ok {
-				timer.Stop()
-				return nil, err
-			}
-			if _, ok = msg.(*wamp.Error); !ok {
+		case msg = <-w.reply:
+			if _, isError := msg.(*wamp.Error); !isError {
 				// Discard message
 				goto waitCancel
 			}
@@ -1546,9 +1641,7 @@ CollectResults:
 		err = ErrNotConn
 	}
 	// All done with this call, so not waiting for more replies.
-	c.sess.Lock()
-	delete(c.awaitingReply, id)
-	c.sess.Unlock()
+	c.dropReply(id)
 
 	return msg, err
 }
@@ -1567,6 +1660,11 @@ func (c *Client) run() {
 		select {
 		case msg, ok := <-recv:
 			if !ok {
+				return
+			}
+			if c.ctx.Err() != nil {
+				// Close gave up waiting for run() (see awaitRunExit):
+				// handle nothing more.
 				return
 			}
 			if c.runReceiveFromRouter(msg) {
@@ -1614,7 +1712,9 @@ func (c *Client) runReceiveFromRouter(msg wamp.Message) bool {
 		c.runSignalReply(msg, msg.Request)
 
 	case *wamp.Goodbye:
+		c.sess.Lock()
 		c.routerGoodbye = msg
+		c.sess.Unlock()
 		return true
 
 	case *wamp.Abort:
@@ -1719,6 +1819,13 @@ func (c *Client) runHandleInvocation(msg *wamp.Invocation) {
 	reqID := msg.Request
 
 	c.sess.Lock()
+	if c.ctx.Err() != nil {
+		// Close gave up waiting for run() and canceled the client (see
+		// awaitRunExit). Start no handler: Close may already be waiting
+		// for the active ones.
+		c.sess.Unlock()
+		return
+	}
 	handler, ok := c.invHandlers[msg.Registration]
 	if !ok {
 		c.sess.Unlock()
@@ -2046,19 +2153,50 @@ func (c *Client) runHandleInterrupt(msg *wamp.Interrupt) {
 	cancel()
 }
 
+// runSignalReply hands a reply to the waiter of its request. It never blocks
+// on a waiter that has gone, so a reply arriving just as its waiter gives up
+// cannot park run().
+//
+// A reply that arrives after its waiter has gone is dropped. In particular,
+// a SUBSCRIBED or REGISTERED that arrives after Subscribe or Register returned
+// ErrReplyTimeout installs no handler, and the client does not send
+// UNSUBSCRIBE or UNREGISTER for it either: the router may hand the same
+// subscription ID to a retried SUBSCRIBE of the same topic, and the same
+// registration ID to a retried shared REGISTER, so undoing the late reply
+// could silently undo the retry. The router keeps the subscription or
+// registration until the session ends; events for it are dropped and
+// invocations are answered with an ERROR, as for any ID the client does not
+// know.
 func (c *Client) runSignalReply(msg wamp.Message, requestID wamp.ID) {
-	var w chan wamp.Message
-	var ok bool
 	c.sess.Lock()
-	w, ok = c.awaitingReply[requestID]
-	c.sess.Unlock()
+	w, ok := c.awaitingReply[requestID]
 	if !ok {
+		c.sess.Unlock()
 		c.log.Println("Received", msg.MessageType(), requestID,
 			"that client is no longer waiting for")
 		return
 	}
 	select {
-	case w <- msg:
+	case w.reply <- msg:
+		// Handed over in the step that found the entry, so the waiter has
+		// not given up. The first reply decides the request: install its
+		// handler now, before run() reads the next message.
+		if install := w.install; install != nil {
+			w.install = nil
+			install(msg)
+		}
+		c.sess.Unlock()
+		return
+	default:
+	}
+	c.sess.Unlock()
+
+	// The waiter has not yet taken an earlier message: a progressive RESULT,
+	// or one of the messages a canceled call discards. Wait for room, but
+	// only as long as somebody waits for the reply.
+	select {
+	case w.reply <- msg:
+	case <-w.gone:
 	case <-c.Done():
 	}
 }
