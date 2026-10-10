@@ -25,13 +25,14 @@ type ComputeSpec struct {
 //
 // Example:
 //
-//	- expect: [4, "wampcra", {challenge: "{{$challenge:string}}"}]
-//	- compute:
-//	    wampcra_sign:
-//	      challenge: "{{$challenge}}"
-//	      secret: "alice-secret"
-//	      capture: signature
-//	- send: [5, "{{$signature}}", {}]
+//	steps:
+//	  - expect: [4, "wampcra", {challenge: "{{$challenge:string}}"}]
+//	  - compute:
+//	      wampcra_sign:
+//	        challenge: "{{$challenge}}"
+//	        secret: "alice-secret"
+//	        capture: signature
+//	  - send: [5, "{{$signature}}", {}]
 type WAMPCRASignSpec struct {
 	// Challenge is the challenge string emitted by the router in
 	// CHALLENGE.Extra.challenge. Use a placeholder like "{{$challenge}}"
