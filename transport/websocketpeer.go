@@ -363,10 +363,14 @@ func (w *websocketPeer) sendHandler() {
 		return nil
 	})
 
+	var gate goodbyeGate
 sendLoop:
 	for {
 		select {
 		case msg := <-w.wr:
+			if !gate.allow(msg) {
+				continue sendLoop
+			}
 			b, err := w.encodeOutbound(msg)
 			if err != nil {
 				w.log.Print(err)
@@ -435,10 +439,14 @@ func (w *websocketPeer) sendHandlerKeepAlive(keepAlive time.Duration) {
 	pingMsg := []byte("keepalive")
 
 	senderDone := w.ctxSender.Done()
+	var gate goodbyeGate
 recvLoop:
 	for {
 		select {
 		case msg := <-w.wr:
+			if !gate.allow(msg) {
+				continue recvLoop
+			}
 			b, err := w.encodeOutbound(msg)
 			if err != nil {
 				w.log.Print(err)

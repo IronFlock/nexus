@@ -245,10 +245,14 @@ func (rs *rawSocketPeer) sendHandler() {
 	defer rs.cancelSender()
 
 	senderDone := rs.ctxSender.Done()
+	var gate goodbyeGate
 sendLoop:
 	for {
 		select {
 		case msg := <-rs.wr:
+			if !gate.allow(msg) {
+				continue sendLoop
+			}
 			b, err := rs.encodeOutbound(msg)
 			if err != nil {
 				rs.log.Print(err)
