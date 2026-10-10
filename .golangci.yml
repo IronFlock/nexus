@@ -61,7 +61,7 @@ formatters:
       sections:
         - standard
         - default
-        - prefix(github.com/gammazero)
+        - prefix(github.com/ironflock,github.com/gammazero)
       custom-order: true
   exclusions:
     generated: lax
