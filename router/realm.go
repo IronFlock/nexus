@@ -345,6 +345,7 @@ func (r *realm) setupMetaProcedures() {
 	r.registerMetaProcedure(wamp.MetaProcSubGet, r.broker.SubGet)
 	r.registerMetaProcedure(wamp.MetaProcSubListSubscribers, r.broker.SubListSubscribers)
 	r.registerMetaProcedure(wamp.MetaProcSubCountSubscribers, r.broker.SubCountSubscribers)
+	r.registerMetaProcedure(wamp.MetaProcSubCountSuscribers, r.broker.SubCountSubscribers) //nolint:staticcheck // registers the deprecated alias on purpose
 	r.registerMetaProcedure(wamp.MetaProcEventHistory, r.broker.SubEventHistory)
 
 	// Register to handle testament meta procedures.
