@@ -27,6 +27,10 @@ type rawSocketPeer struct {
 	// Used to signal the socket is closed explicitly.
 	closed chan struct{}
 
+	// Closed by Close to ask the send loop to flush what is already queued
+	// and exit. See flush.
+	flushReq chan struct{}
+
 	// Channels communicate with router.
 	rd chan wamp.Message
 	wr chan wamp.Message
@@ -149,6 +153,7 @@ func newRawSocketPeer(conn net.Conn, serializer serialize.Serializer, logger std
 		recvLimit:  recvLimit,
 
 		closed:     make(chan struct{}),
+		flushReq:   make(chan struct{}),
 		writerDone: make(chan struct{}),
 
 		// The router will read from this channel and immediately dispatch the
@@ -211,9 +216,12 @@ func (rs *rawSocketPeer) encodeOutbound(msg wamp.Message) ([]byte, error) {
 
 // Close closes the rawsocket peer. Idempotent and safe to call
 // concurrently with Send — the wr channel is intentionally NOT
-// closed (only sendHandler reads from it and exits cleanly via
-// cancelSender). Senders that may race with Close should use the
+// closed (only sendHandler reads from it and exits cleanly after
+// flushing). Senders that may race with Close should use the
 // cooperative Send+Done select pattern from wamp.Peer.
+//
+// Frames already queued when Close is called are still written, up to
+// and including a GOODBYE, within one writeTimeout. See flush.
 //
 // Bare `peer.Send() <- msg` after Close blocks forever rather than
 // panicking. Callers that don't use the cooperative pattern must
@@ -227,9 +235,12 @@ func (rs *rawSocketPeer) Close() {
 		// and abandon their writes.
 		close(rs.closed)
 
-		// Stop sendHandler. Do not close rs.wr — that would race
-		// with concurrent Send from external goroutines.
-		rs.cancelSender()
+		// Let sendHandler flush the queue and exit. Do not close rs.wr —
+		// that would race with concurrent Send from external goroutines.
+		// Do not cancel the sender either: the router queues GOODBYE
+		// right before closing the session, and cancelling discarded it
+		// whenever frames were still queued ahead of it.
+		close(rs.flushReq)
 		<-rs.writerDone
 
 		// Ignore errors since socket may have been closed by other
@@ -250,34 +261,102 @@ sendLoop:
 	for {
 		select {
 		case msg := <-rs.wr:
+			if rs.flushRequested() {
+				rs.flush(&gate, msg)
+				return
+			}
 			if !gate.allow(msg) {
 				continue sendLoop
 			}
-			b, err := rs.encodeOutbound(msg)
-			if err != nil {
-				rs.log.Print(err)
-				continue sendLoop
-			}
-			if len(b) > rs.sendLimit {
-				rs.log.Println("Message size", len(b), "exceeds limit of",
-					rs.sendLimit)
-				continue sendLoop
-			}
-			lenBytes := intToBytes(len(b))
-			header := []byte{0x0, lenBytes[0], lenBytes[1], lenBytes[2]}
-			if _, err = rs.conn.Write(header); err != nil {
-				if !wamp.IsGoodbyeAck(msg) {
-					rs.log.Println("Error writing header:", err)
-				}
-				continue sendLoop
-			}
-			if _, err = rs.conn.Write(b); err != nil {
-				if !wamp.IsGoodbyeAck(msg) {
-					rs.log.Println("Error writing message:", msg, err)
-				}
-				continue sendLoop
-			}
+			_ = rs.writeMsg(msg)
+		case <-rs.flushReq:
+			rs.flush(&gate, nil)
+			return
 		case <-senderDone:
+			return
+		}
+	}
+}
+
+// writeMsg encodes msg and writes it as one rawsocket frame. A message that
+// cannot be encoded or exceeds the send limit is logged and skipped; only a
+// socket write error is returned.
+func (rs *rawSocketPeer) writeMsg(msg wamp.Message) error {
+	b, err := rs.encodeOutbound(msg)
+	if err != nil {
+		rs.log.Print(err)
+		return nil
+	}
+	if len(b) > rs.sendLimit {
+		rs.log.Println("Message size", len(b), "exceeds limit of",
+			rs.sendLimit)
+		return nil
+	}
+	lenBytes := intToBytes(len(b))
+	header := []byte{0x0, lenBytes[0], lenBytes[1], lenBytes[2]}
+	if _, err = rs.conn.Write(header); err != nil {
+		if !wamp.IsGoodbyeAck(msg) {
+			rs.log.Println("Error writing header:", err)
+		}
+		return err
+	}
+	if _, err = rs.conn.Write(b); err != nil {
+		if !wamp.IsGoodbyeAck(msg) {
+			rs.log.Println("Error writing message:", msg, err)
+		}
+		return err
+	}
+	return nil
+}
+
+// flushRequested reports whether Close has asked the send loop to flush.
+// The send loop checks it before writing a frame it took from the queue, so
+// that once Close is called every frame goes out under flush's deadline,
+// whichever case select happened to pick.
+func (rs *rawSocketPeer) flushRequested() bool {
+	select {
+	case <-rs.flushReq:
+		return true
+	default:
+		return false
+	}
+}
+
+// flush writes the frames that are queued when Close is called, starting
+// with first if the send loop already took one, so that a GOODBYE queued
+// just before Close reaches the peer. It stops after writing a GOODBYE (the
+// gate would drop everything after it anyway), when the queue is empty, on
+// a write error, or when the remote end has closed the connection.
+//
+// The send loop writes without a deadline, so flush sets one on the socket
+// for all its frames: a peer that stopped reading holds Close for at most
+// writeTimeout. The socket is closed right after, so the deadline is never
+// reset.
+func (rs *rawSocketPeer) flush(gate *goodbyeGate, first wamp.Message) {
+	if gate.closed {
+		return
+	}
+	deadline := time.Now().Add(writeTimeout)
+	_ = rs.conn.SetWriteDeadline(deadline)
+	for time.Now().Before(deadline) {
+		msg := first
+		first = nil
+		if msg == nil {
+			select {
+			case <-rs.ctxSender.Done():
+				return
+			case msg = <-rs.wr:
+			default:
+				return
+			}
+		}
+		if !gate.allow(msg) {
+			continue
+		}
+		if rs.writeMsg(msg) != nil {
+			return
+		}
+		if gate.closed {
 			return
 		}
 	}
@@ -372,12 +451,14 @@ MsgLoop:
 		case rs.rd <- msg:
 		case <-rs.closed:
 			// If closed, try for one second to send the last message and then
-			// exit recvHandler.
+			// exit recvHandler. Close the socket only once the send loop has
+			// finished flushing, so the flush is not cut short.
 			timer := time.NewTimer(time.Second)
 			select {
 			case rs.rd <- msg:
 			case <-timer.C:
 			}
+			<-rs.writerDone
 			_ = rs.conn.Close()
 			timer.Stop()
 			return
