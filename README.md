@@ -2,10 +2,38 @@
 
 # WAMP v2 router library, client library and router service
 
-[![Main CI](https://github.com/gammazero/nexus/actions/workflows/main-golint.yml/badge.svg)](https://github.com/gammazero/nexus/actions/workflows/main-golint.yml)
-[![Coverage](https://img.shields.io/badge/coverage-62.8%25-orange)](https://github.com/gammazero/nexus/actions/workflows/main-golint.yml)
+[![Main CI](https://github.com/IronFlock/nexus/actions/workflows/main-golint.yml/badge.svg)](https://github.com/IronFlock/nexus/actions/workflows/main-golint.yml)
+[![Coverage](https://img.shields.io/badge/coverage-62.8%25-orange)](https://github.com/IronFlock/nexus/actions/workflows/main-golint.yml)
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![GoDoc](https://godoc.org/github.com/gammazero/nexus?status.svg)](https://godoc.org/github.com/gammazero/nexus)
+[![Go Reference](https://pkg.go.dev/badge/github.com/ironflock/nexus/v3.svg)](https://pkg.go.dev/github.com/ironflock/nexus/v3)
+
+## About this fork
+
+This is IronFlock's fork of [gammazero/nexus](https://github.com/gammazero/nexus). It is the library underneath
+the IronFlock WAMP router. The module path is `github.com/ironflock/nexus/v3`. Everything else in this README
+applies to both repositories unless it says otherwise.
+
+What the fork adds on top of upstream:
+
+- **Extension seams for a clustered router.** `Broker` and `Dealer` are interfaces. `RealmConfig.BrokerFactory` and
+  `DealerFactory` let you wrap the defaults (`NewDefaultBroker`, `NewDefaultDealer`). Subscription and
+  registration observers, a `SubMetaSink` for subscription meta events, and `Dealer.EvictRegistration` let an
+  external layer mirror and forward routing state between nodes.
+- **Operations API.** `Router.Drain()` sends GOODBYE to every client and refuses new sessions, while work already
+  in flight completes. `Router.KillSessionsByAuthid` and `KillSessionsByAuthrole` close sessions from Go code.
+- **Router options.** `RealmConfig.AuthorizeUnlocked` lets a slow `Authorizer` run without stalling the realm.
+  `RealmConfig.StrictRequestIDs` enforces sequential request IDs (WAMP §5.1.2). Websocket servers expose TCP
+  buffer and Nagle settings. Authenticators can see the target realm URI.
+- **Protocol features.** `force_reregister` and `wamp.session.list_testaments`.
+- **Robustness fixes.** Slow callers no longer block callees. Websocket frame writes have a deadline. Nothing is
+  sent on a session after its GOODBYE, and `Close()` flushes queued frames up to the GOODBYE. Realm shutdown runs
+  in order. Peer `Close` is idempotent. Several goroutine leaks are fixed. Progressive payload transport (PPT)
+  round-trips over every serializer.
+- **WAMP conformance harness.** [`spec/`](spec/) has YAML test plans that check the router's behaviour frame by
+  frame over the wire.
+
+Fixes that are useful outside IronFlock are offered back to gammazero/nexus as pull requests. IronFlock-specific
+code stays out of this repository.
 
 **nexus** is a [WAMP](http://wamp-proto.org/) v2 router library, client library, and a router service, that implements
 most of the features defined in the WAMP-protocol advanced profile. The nexus project is written in
@@ -14,11 +42,12 @@ functionality. The router and client interoperate with other WAMP implementation
 
 ## Documentation
 
-See the [**nexus project Wiki**](https://github.com/gammazero/nexus/wiki) for documentation, examples, and
-operational details.
+See the upstream [**nexus project Wiki**](https://github.com/gammazero/nexus/wiki) for documentation, examples, and
+operational details. The wiki does not cover the fork-only additions listed above. Those are documented in the Go
+doc comments.
 
-[![GoDoc](https://godoc.org/github.com/gammazero/nexus?status.svg)](https://godoc.org/github.com/gammazero/nexus) for
-API documentation.
+[![Go Reference](https://pkg.go.dev/badge/github.com/ironflock/nexus/v3.svg)](https://pkg.go.dev/github.com/ironflock/nexus/v3)
+for API documentation.
 
 ## What is WAMP and nexus
 
@@ -46,19 +75,17 @@ and routed RPC messaging.
 ### Install nexusd router service from source
 
 ```
-go get -d github.com/gammazero/nexus/nexusd
-cd ${GOPATH}/src/github.com/gammazero/nexus/nexusd
-make install
+go install github.com/ironflock/nexus/v3/nexusd@latest
 ```
 
-Run `nexusd -help` to see usage information. Although `nexusd` can be run using only command line flags,
-a [configuration file](https://raw.githubusercontent.com/gammazero/nexus/v3/nexusd/etc/nexus.json) offers much
-more configurability.
+Run `nexusd -help` to see usage information. You can run `nexusd` with command-line flags only, but the
+[configuration file](nexusd/etc/nexus.json) gives you more options.
 
 ### Create configuration file and run nexusd service
 
 ```
-cp ${GOPATH}/src/github.com/gammazero/nexus/nexusd/etc/nexus.json ./
+git clone https://github.com/IronFlock/nexus.git
+cp nexus/nexusd/etc/nexus.json ./
 vi nexus.json
 nexusd -c nexus.json
 ```
@@ -66,15 +93,15 @@ nexusd -c nexus.json
 ### Install examples to run and test with
 
 ```
-git clone git@github.com:gammazero/nexus.git
+git clone https://github.com/IronFlock/nexus.git
 cd nexus/examples
 ```
 
 ## Building routers and clients with nexus
 
-The nexus router library is used to build a WAMP router or embed one in your service. The nexus client library is
-used to build WAMP clients into you goloang applications. To use either of these libraries, import the v3 version of
-the appropriate packages. Version v3 is the only currently supported version.
+Use the nexus router library to build a WAMP router or to embed one in your service. Use the nexus client library
+to build WAMP clients into your Go applications. Import the v3 packages of the fork's module path. v3 is the only
+supported version.
 
 ```go
 import (
@@ -85,53 +112,44 @@ import (
 
 ## Run nexusd from a container
 
-Pull the nexusd container image built with the latest code version and run the container:
+This fork does not publish a container image. The `ghcr.io/gammazero/nexusd` image is built from upstream code
+and does not include the fork's changes. Build the image from this repository instead. The
+[Dockerfile](Dockerfile) installs `nexusd` from the `github.com/ironflock/nexus/v3` module:
 
 ```
-docker pull ghcr.io/gammazero/nexusd:latest
-docker run ghcr.io/gammazero/nexusd:latest
+docker build -t nexusd .
+docker run -p 8080:8080 nexusd
 ```
 
-Now it just works. By default, the router accepts connections on port `8080` and allows anonymous communication with
-clients using `realm1`. You can change the values or get help by passing options to the container process:
+By default, the router accepts connections on port `8080` and allows anonymous clients on `realm1`. To change
+these values or get help, pass options to the container process:
 
 ```
-docker run ghcr.io/gammazero/nexusd:latest --ws 0.0.0.0:8888 --realm autobahn
-docker run ghcr.io/gammazero/nexusd:latest --help
+docker run nexusd --ws 0.0.0.0:8888 --realm autobahn
+docker run nexusd --help
 ```
 
-Alternatively, you can mount the nexusd configuration file to the container, and get a more customizable and secure
-environment. See the nexusd configuration reference for details. Finally, you can also run the container process as
-an unprivileged user.
-
+You can also mount a nexusd configuration file into the container for more control and a more secure setup. See
+the nexusd configuration reference for details. You can also run the container process as an unprivileged user.
 
 ## Examples
 
-Look at the examples to see how to create simple clients and servers. Follow the
-[README.md](https://github.com/gammazero/nexus/blob/v3/examples/README.md) in the `nexus/examples` directory.
-Examples of using advanced profile features are also available in the
-[wiki documentation](https://github.com/gammazero/nexus/wiki).
+The [examples](examples/) show how to create simple clients and servers. Start with
+[examples/README.md](examples/README.md). The upstream
+[wiki documentation](https://github.com/gammazero/nexus/wiki) has more examples of advanced profile features.
 
-https://github.com/gammazero/nexus/tree/v3/examples
+The [interop examples](examples/interop/) show nexus working with other WAMP implementations. Each one has its own
+README.md that explains how to set up the environment and run it.
 
-The examples include interoperability examples to demonstrate nexus working with different WAMP implementations.
-Each of these has its own README.md that describes how to set up the environment and run the examples.
-
-https://github.com/gammazero/nexus/tree/v3/examples/interop
-
-The nexusd service is also an example stand-alone WAMP router. All the router options are configurable in nexusd
-using a configuration file, and one is provided in the `nexusd/etc/` directory. This can be used as starting point
-to write your own WAMP router service.
-
-https://github.com/gammazero/nexus/tree/v3/nexusd
+The [nexusd](nexusd/) service is also an example of a stand-alone WAMP router. Its configuration file sets every
+router option. Use the file in `nexusd/etc/` as a starting point for your own WAMP router service.
 
 ## Contributing
 
-Please read the [Contributing](https://github.com/gammazero/nexus/blob/v3/CONTRIBUTING.md#contributing-to-nexus)
-guide if you are interested in becoming a contributor to this project.
+Read the [Contributing](CONTRIBUTING.md#contributing-to-nexus) guide if you want to contribute.
 
-Please report any problems, or request changes and new functionality by opening
-an [issue](https://github.com/gammazero/nexus/issues).
+Report problems with the fork-only additions as an [issue on this fork](https://github.com/IronFlock/nexus/issues).
+Report general nexus problems and feature requests [upstream](https://github.com/gammazero/nexus/issues).
 
 ## Nexus Features
 
@@ -140,7 +158,7 @@ an [issue](https://github.com/gammazero/nexus/issues).
   [Router Concurrency](https://github.com/gammazero/nexus/wiki/Router-Concurrency) and
   [Client Concurrency](https://github.com/gammazero/nexus/wiki/Client-Concurrency) for details.
 - **WAMP Advanced Profile Features**  This project implements most of the advanced profile features in WAMP v2.
-  See [current feature support](https://github.com/gammazero/nexus#advanced-profile-feature-support) provided by nexus.
+  See [current feature support](#advanced-profile-feature-support) provided by nexus.
   Nexus also offers extended functionality for retrieving session information and for message filtering, giving clients
   more ability to decide where to send messages.
 - **Flexibility** Multiple transports and serialization options are supported, and more are being developed to maximize
@@ -173,7 +191,7 @@ The currently maintained version of this module is 3.x. Earlier major versions a
 | shared_registration          | Yes       |
 | force_reregister             | Yes       |
 | sharded_registration         | No        |
-| registration_revocation      | No        |
+| registration_revocation      | No [^1]   |
 | procedure_reflection         | No        |
 | payload_passthru_mode        | Yes       |
 
@@ -191,7 +209,6 @@ The currently maintained version of this module is 3.x. Earlier major versions a
 | sharded_subscription          | No        |
 | event_history                 | Yes       |
 | topic_reflection              | No        |
-| testament_meta_api            | Yes       |
 | payload_passthru_mode         | Yes       |
 
 ### Other Advanced Features
@@ -201,14 +218,21 @@ The currently maintained version of this module is 3.x. Earlier major versions a
 | rawsocket (TCP & Unix) transport  | Yes        |
 | session meta events               | Yes        |
 | session meta procedures           | Yes        |
+| testament meta API                | Yes        |
 | TLS for websockets                | Yes        |
 | TLS for rawsockets                | Yes        |
 | challenge-response authentication | Yes        |
+| cryptosign authentication         | Yes [^2]   |
 | cookie authentication             | Yes        |
 | ticket authentication             | Yes        |
 | batched WS transport              | No         |
 | longpoll transport                | No         |
 | websocket compression             | Yes        |
+
+[^1]: The router sends an unsolicited `UNREGISTERED` only when it evicts an old registration because a client
+    registered the same procedure with `force_reregister`. There is no API to revoke a registration, and the feature
+    is not announced in `WELCOME`.
+[^2]: Router side only (`auth.NewCryptoSignAuthenticator`). The nexus client does not implement cryptosign.
 
 ## Extended Functionality
 
