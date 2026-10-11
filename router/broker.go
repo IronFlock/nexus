@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/gammazero/deque"
+
 	"github.com/ironflock/nexus/v3/stdlog"
 	"github.com/ironflock/nexus/v3/transport/serialize"
 	"github.com/ironflock/nexus/v3/wamp"
