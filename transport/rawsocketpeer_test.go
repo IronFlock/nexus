@@ -29,6 +29,14 @@ const rawSocketMagic = 0x7f
 func newPipedRawSocket(t *testing.T, recvLimit int) (clientConn net.Conn, peer wamp.Peer) {
 	t.Helper()
 	client, server := net.Pipe()
+	return client, acceptPipedRawSocket(t, client, server, recvLimit, 0)
+}
+
+// acceptPipedRawSocket runs the rawsocket handshake over a connected pair
+// and returns the server-side peer, with an outbound queue of
+// outQueueSize frames.
+func acceptPipedRawSocket(t *testing.T, client, server net.Conn, recvLimit, outQueueSize int) wamp.Peer {
+	t.Helper()
 
 	// Client-side handshake: magic + (sendLimit<<4 | json) + 0 + 0.
 	// We pick sendLimit=0 (which becomes 2^9=512) and serialization=1 (JSON).
@@ -50,7 +58,7 @@ func newPipedRawSocket(t *testing.T, recvLimit int) (clientConn net.Conn, peer w
 	}()
 
 	logger := log.New(io.Discard, "", 0)
-	peer, err := transport.AcceptRawSocket(server, logger, recvLimit, 0)
+	peer, err := transport.AcceptRawSocket(server, logger, recvLimit, outQueueSize)
 	require.NoError(t, err)
 
 	select {
@@ -58,7 +66,7 @@ func newPipedRawSocket(t *testing.T, recvLimit int) (clientConn net.Conn, peer w
 	case <-time.After(time.Second):
 		require.FailNow(t, "client handshake did not complete")
 	}
-	return client, peer
+	return peer
 }
 
 // writeFrame writes a 4-byte length prefix + body to conn. The first

@@ -1,7 +1,9 @@
 package transport_test
 
 import (
+	"io"
 	"log"
+	"net"
 	"sync"
 	"testing"
 	"time"
@@ -137,6 +139,104 @@ func TestWSCloseAfterRemoteCloseDoesNotFlush(t *testing.T) {
 	peer := transport.NewWebsocketPeer(conn, &serialize.JSONSerializer{}, websocket.TextMessage, log.Default(), 0, 16)
 	_ = conn.Close() // ReadMessage fails: the remote end is gone.
 	<-peer.Recv()    // recvHandler has stopped the sender.
+
+	start := time.Now()
+	peer.Close()
+	require.Less(t, time.Since(start), time.Second)
+}
+
+// deadlineConn records the write deadlines set on a net.Conn.
+type deadlineConn struct {
+	net.Conn
+	mu        sync.Mutex
+	deadlines []time.Time
+}
+
+func (c *deadlineConn) SetWriteDeadline(t time.Time) error {
+	c.mu.Lock()
+	c.deadlines = append(c.deadlines, t)
+	c.mu.Unlock()
+	return c.Conn.SetWriteDeadline(t)
+}
+
+func (c *deadlineConn) recorded() []time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return append([]time.Time(nil), c.deadlines...)
+}
+
+// readRawFrames reads WAMP frames from a rawsocket client connection until
+// it is closed, and returns their types.
+func readRawFrames(t *testing.T, conn net.Conn) []wamp.MessageType {
+	t.Helper()
+	ser := &serialize.JSONSerializer{}
+	var got []wamp.MessageType
+	// Set once: net.Pipe refuses SetReadDeadline after the remote end closed.
+	require.NoError(t, conn.SetReadDeadline(time.Now().Add(5*time.Second)))
+	for {
+		var header [4]byte
+		if _, err := io.ReadFull(conn, header[:]); err != nil {
+			require.ErrorIs(t, err, io.EOF, "connection not closed by the peer")
+			return got
+		}
+		body := make([]byte, int(header[1])<<16|int(header[2])<<8|int(header[3]))
+		_, err := io.ReadFull(conn, body)
+		require.NoError(t, err)
+		msg, err := ser.Deserialize(body)
+		require.NoError(t, err)
+		got = append(got, msg.MessageType())
+	}
+}
+
+// The rawsocket peer flushes like the websocket peer: Close writes the frames
+// already queued, up to and including the GOODBYE, under a single write
+// deadline. net.Pipe has no buffer, so the first frame stays on the wire
+// until the client reads and everything after it is still queued at Close.
+func TestRawSocketCloseFlushesQueuedGoodbye(t *testing.T) {
+	client, server := net.Pipe()
+	t.Cleanup(func() { _ = client.Close() })
+	conn := &deadlineConn{Conn: server}
+	peer := acceptPipedRawSocket(t, client, conn, 1, 16)
+
+	peer.Send() <- &wamp.Welcome{ID: 1, Details: wamp.Dict{}}
+	peer.Send() <- &wamp.Event{Subscription: 1, Publication: 2, Details: wamp.Dict{}}
+	peer.Send() <- &wamp.Goodbye{Reason: wamp.ErrGoodbyeAndOut, Details: wamp.Dict{}}
+	peer.Send() <- &wamp.Event{Subscription: 1, Publication: 3, Details: wamp.Dict{}}
+
+	before := time.Now()
+	closed := make(chan struct{})
+	go func() {
+		peer.Close()
+		close(closed)
+	}()
+	select {
+	case <-closed:
+		t.Fatal("Close returned before the queued frames were read")
+	case <-time.After(20 * time.Millisecond):
+	}
+
+	require.Equal(t,
+		[]wamp.MessageType{wamp.WELCOME, wamp.EVENT, wamp.GOODBYE},
+		readRawFrames(t, client))
+	select {
+	case <-closed:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Close did not return")
+	}
+
+	deadlines := conn.recorded()
+	require.Len(t, deadlines, 1, "flush sets one deadline for all its frames")
+	require.True(t, deadlines[0].After(before.Add(time.Second)), "deadline %v is not in the future", deadlines[0])
+	require.True(t, deadlines[0].Before(before.Add(10*time.Minute)), "deadline %v is unbounded", deadlines[0])
+}
+
+// When the remote end closes first, Close neither flushes nor waits.
+func TestRawSocketCloseAfterRemoteCloseDoesNotFlush(t *testing.T) {
+	client, server := net.Pipe()
+	peer := acceptPipedRawSocket(t, client, server, 1, 16)
+	_ = client.Close()
+	for range peer.Recv() { //nolint:revive // drain until recvHandler exits
+	}
 
 	start := time.Now()
 	peer.Close()
