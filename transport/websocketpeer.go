@@ -87,6 +87,10 @@ type websocketPeer struct {
 	// Used to signal the websocket is closed explicitly.
 	closed chan struct{}
 
+	// Closed by Close to ask the send loop to flush what is already queued
+	// and exit. See flush.
+	flushReq chan struct{}
+
 	// Channels communicate with router.
 	rd chan wamp.Message
 	wr chan wamp.Message
@@ -221,6 +225,7 @@ func NewWebsocketPeer(conn WebsocketConnection, serializer serialize.Serializer,
 		payloadType: payloadType,
 		keepAlive:   keepAlive,
 		closed:      make(chan struct{}),
+		flushReq:    make(chan struct{}),
 		recvDone:    make(chan struct{}),
 		writerDone:  make(chan struct{}),
 
@@ -259,8 +264,14 @@ func (w *websocketPeer) Recv() <-chan wamp.Message { return w.rd }
 // supports one. Every frame goes through here — a deadline left behind by
 // a data frame would otherwise fail a later ping.
 func (w *websocketPeer) write(messageType int, data []byte) error {
+	return w.writeBy(time.Now().Add(writeTimeout), messageType, data)
+}
+
+// writeBy sends one frame under the given write deadline when the
+// connection supports one.
+func (w *websocketPeer) writeBy(deadline time.Time, messageType int, data []byte) error {
 	if wd, ok := w.conn.(writeDeadliner); ok {
-		_ = wd.SetWriteDeadline(time.Now().Add(writeTimeout))
+		_ = wd.SetWriteDeadline(deadline)
 	}
 	return w.conn.WriteMessage(messageType, data)
 }
@@ -309,9 +320,12 @@ func (w *websocketPeer) encodeOutbound(msg wamp.Message) ([]byte, error) {
 
 // Close closes the websocket peer. Idempotent and safe to call
 // concurrently with Send — the wr channel is intentionally NOT
-// closed (only sendHandler reads from it and exits cleanly via
-// cancelSender). Senders that may race with Close should use the
+// closed (only sendHandler reads from it and exits cleanly after
+// flushing). Senders that may race with Close should use the
 // cooperative Send+Done select pattern from wamp.Peer.
+//
+// Frames already queued when Close is called are still written, up to
+// and including a GOODBYE, within one writeTimeout. See flush.
 //
 // Bare `peer.Send() <- msg` after Close blocks forever rather than
 // panicking. Callers that don't use the cooperative pattern must
@@ -325,9 +339,12 @@ func (w *websocketPeer) Close() {
 		// and abandon their writes.
 		close(w.closed)
 
-		// Stop sendHandler. Do not close w.wr — that would race
-		// with concurrent Send from external goroutines.
-		w.cancelSender()
+		// Let sendHandler flush the queue and exit. Do not close w.wr —
+		// that would race with concurrent Send from external goroutines.
+		// Do not cancel the sender either: the router queues GOODBYE
+		// right before closing the session, and cancelling discarded it
+		// whenever frames were still queued ahead of it.
+		close(w.flushReq)
 		<-w.writerDone
 
 		closeMsg := websocket.FormatCloseMessage(websocket.CloseNormalClosure, "goodbye")
@@ -368,6 +385,10 @@ sendLoop:
 	for {
 		select {
 		case msg := <-w.wr:
+			if w.flushRequested() {
+				w.flush(&gate, msg)
+				return
+			}
 			if !gate.allow(msg) {
 				continue sendLoop
 			}
@@ -388,7 +409,67 @@ sendLoop:
 			if err != nil {
 				w.log.Print(err)
 			}
+		case <-w.flushReq:
+			w.flush(&gate, nil)
+			return
 		case <-w.ctxSender.Done():
+			return
+		}
+	}
+}
+
+// flushRequested reports whether Close has asked the send loop to flush.
+// A send loop checks it before writing a frame it took from the queue, so
+// that once Close is called every frame goes out under flush's deadline,
+// whichever case select happened to pick.
+func (w *websocketPeer) flushRequested() bool {
+	select {
+	case <-w.flushReq:
+		return true
+	default:
+		return false
+	}
+}
+
+// flush writes the frames that are queued when Close is called, starting
+// with first if the send loop already took one, so that a GOODBYE queued
+// just before Close reaches the peer. It stops after writing a GOODBYE (the
+// gate would drop everything after it anyway), when the queue is empty, on
+// a write error, or when the remote end has closed the connection. All
+// frames share one deadline of writeTimeout, so a peer that stopped reading
+// holds Close for no longer than a single frame write could.
+func (w *websocketPeer) flush(gate *goodbyeGate, first wamp.Message) {
+	if gate.closed {
+		return
+	}
+	deadline := time.Now().Add(writeTimeout)
+	for time.Now().Before(deadline) {
+		msg := first
+		first = nil
+		if msg == nil {
+			select {
+			case <-w.ctxSender.Done():
+				return
+			case msg = <-w.wr:
+			default:
+				return
+			}
+		}
+		if !gate.allow(msg) {
+			continue
+		}
+		b, err := w.encodeOutbound(msg)
+		if err != nil {
+			w.log.Print(err)
+			continue
+		}
+		if err = w.writeBy(deadline, w.payloadType, b); err != nil {
+			if !wamp.IsGoodbyeAck(msg) {
+				w.log.Print(err)
+			}
+			return
+		}
+		if gate.closed {
 			return
 		}
 	}
@@ -444,6 +525,10 @@ recvLoop:
 	for {
 		select {
 		case msg := <-w.wr:
+			if w.flushRequested() {
+				w.flush(&gate, msg)
+				return
+			}
 			if !gate.allow(msg) {
 				continue recvLoop
 			}
@@ -477,6 +562,9 @@ recvLoop:
 			if err != nil {
 				w.log.Print(err)
 			}
+		case <-w.flushReq:
+			w.flush(&gate, nil)
+			return
 		case <-senderDone:
 			return
 		}
