@@ -12,6 +12,9 @@ COPY --from=build-image /go/bin/nexusd /usr/bin/nexusd
 
 EXPOSE 8080
 
+# Unprivileged: 8080 needs no root.
+USER 65534:65534
+
 ENTRYPOINT ["/usr/bin/nexusd"]
 CMD ["--ws", "0.0.0.0:8080", "--realm", "realm1"]
 

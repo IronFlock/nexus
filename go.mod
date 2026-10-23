@@ -2,7 +2,7 @@ module github.com/ironflock/nexus/v3
 
 go 1.25.0
 
-toolchain go1.26.4
+toolchain go1.27.3
 
 require (
 	github.com/gammazero/deque v1.2.1

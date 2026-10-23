@@ -1,0 +1,9 @@
+# gitleaks: the default rules plus reviewed exceptions for this repository.
+# Each allowlist names the files AND the rule it covers, with the reason.
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Self-signed TLS keys of the example server and the TLS tests, inherited unchanged from upstream gammazero/nexus (reviewed 2026-10-24): demo keys published with the code, used nowhere else."
+targetRules = ["private-key"]
+paths = ['''^examples/server/rsakey\.pem$''', '''^test/rsakey\.pem$''']
